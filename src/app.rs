@@ -44,6 +44,7 @@ enum WorkerEvent {
     StartFinished {
         result: Result<(u32, String), String>,
         open_browser: bool,
+        refresh_existing_tab: bool,
     },
     VersionFinished(Result<VersionInfo, String>),
     DshUpdateCheckFinished(Result<DshUpdateInfo, String>),
@@ -194,12 +195,12 @@ impl App {
     fn on_timer(&mut self) {
         if !self.initial_started {
             self.initial_started = true;
-            self.begin_start(true, true);
+            self.begin_start(true, true, false);
             self.refresh_version_async();
         }
 
         if !self.exiting && self.single_instance.is_open_web_ui_requested() {
-            self.open_web_ui();
+            self.open_web_ui(false);
         }
 
         let process_events = self.process_events.try_iter().collect::<Vec<_>>();
@@ -221,7 +222,8 @@ impl App {
             WorkerEvent::StartFinished {
                 result,
                 open_browser,
-            } => self.handle_start_finished(result, open_browser),
+                refresh_existing_tab,
+            } => self.handle_start_finished(result, open_browser, refresh_existing_tab),
             WorkerEvent::VersionFinished(result) => self.handle_version_finished(result),
             WorkerEvent::DshUpdateCheckFinished(result) => {
                 self.handle_dsh_update_check_finished(result)
@@ -245,7 +247,7 @@ impl App {
                     }
                 } else {
                     self.operation_in_progress = false;
-                    self.begin_start(open_browser, true);
+                    self.begin_start(open_browser, true, true);
                 }
             }
             WorkerEvent::ExitFinished => {
@@ -258,7 +260,12 @@ impl App {
         }
     }
 
-    fn begin_start(&mut self, open_browser: bool, reset_restart_budget: bool) {
+    fn begin_start(
+        &mut self,
+        open_browser: bool,
+        reset_restart_budget: bool,
+        refresh_existing_tab: bool,
+    ) {
         if self.operation_in_progress || self.exiting {
             return;
         }
@@ -275,11 +282,17 @@ impl App {
             let _ = sender.send(WorkerEvent::StartFinished {
                 result,
                 open_browser,
+                refresh_existing_tab,
             });
         });
     }
 
-    fn handle_start_finished(&mut self, result: Result<(u32, String), String>, open_browser: bool) {
+    fn handle_start_finished(
+        &mut self,
+        result: Result<(u32, String), String>,
+        open_browser: bool,
+        refresh_existing_tab: bool,
+    ) {
         self.operation_in_progress = false;
         match result {
             Ok((process_id, web_ui_url)) => {
@@ -289,7 +302,7 @@ impl App {
                 self.logger
                     .info(format!("DeepSeek Harness 已就绪：{web_ui_url}"));
                 if open_browser {
-                    self.open_web_ui();
+                    self.open_web_ui(refresh_existing_tab);
                 }
             }
             Err(error) => {
@@ -475,7 +488,7 @@ impl App {
                     ),
                     MB_OK | MB_ICONINFORMATION,
                 );
-                self.begin_start(true, true);
+                self.begin_start(true, true, false);
             }
             Err(error) => {
                 self.operation_in_progress = false;
@@ -485,7 +498,7 @@ impl App {
                     &format!("检查或安装更新失败，正在尝试重新启动 Harness：\r\n\r\n{error}"),
                     MB_OK | MB_ICONERROR,
                 );
-                self.begin_start(true, true);
+                self.begin_start(true, true, false);
             }
         }
     }
@@ -616,7 +629,7 @@ impl App {
             self.automatic_restart_used = true;
             self.logger
                 .error("DeepSeek Harness 意外退出，准备自动重启一次");
-            self.begin_start(false, false);
+            self.begin_start(false, false, false);
         } else {
             self.logger
                 .error("DeepSeek Harness 再次意外退出，停止自动重启");
@@ -627,7 +640,7 @@ impl App {
         }
     }
 
-    fn open_web_ui(&self) {
+    fn open_web_ui(&self, refresh_existing_tab: bool) {
         if !self.harness.is_running() {
             return;
         }
@@ -635,7 +648,7 @@ impl App {
             return;
         };
 
-        if browser::try_activate(&web_ui_url) {
+        if browser::try_activate(&web_ui_url, refresh_existing_tab) {
             self.logger.info("已切换到现有 Web UI 标签页");
             return;
         }
@@ -660,7 +673,7 @@ impl App {
 
     fn handle_command(&mut self, command: usize) {
         match command {
-            COMMAND_OPEN => self.open_web_ui(),
+            COMMAND_OPEN => self.open_web_ui(false),
             COMMAND_RESTART => self.begin_restart(true),
             COMMAND_LOG => self.open_current_log(),
             COMMAND_DSH_UPDATE => self.begin_dsh_update_check(),
@@ -792,7 +805,7 @@ unsafe extern "system" fn window_proc(
             }
             TRAY_CALLBACK_MESSAGE => {
                 match lparam.0 as u32 {
-                    WM_LBUTTONDBLCLK => app.open_web_ui(),
+                    WM_LBUTTONDBLCLK => app.open_web_ui(false),
                     WM_RBUTTONUP | WM_CONTEXTMENU => app.show_context_menu(),
                     _ => {}
                 }
