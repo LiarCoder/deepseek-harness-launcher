@@ -1,6 +1,6 @@
 [package]
 name = "deepseek-harness-launcher"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 description = "Lightweight Windows tray launcher for a globally installed DeepSeek Harness"
 license = "MIT"
