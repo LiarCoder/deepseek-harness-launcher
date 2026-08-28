@@ -21,21 +21,22 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 const WEB_UI_TITLE: &str = "DeepSeek Harness";
+const VK_R_KEY: VIRTUAL_KEY = VIRTUAL_KEY(0x52);
 
-pub fn try_activate(web_ui_url: &str) -> bool {
+pub fn try_activate(web_ui_url: &str, refresh_matching_tab: bool) -> bool {
     unsafe {
         let initialization = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         if initialization.is_err() {
             return false;
         }
 
-        let result = activate_with_automation(web_ui_url);
+        let result = activate_with_automation(web_ui_url, refresh_matching_tab);
         CoUninitialize();
         result.unwrap_or(false)
     }
 }
 
-unsafe fn activate_with_automation(web_ui_url: &str) -> Result<bool> {
+unsafe fn activate_with_automation(web_ui_url: &str, refresh_matching_tab: bool) -> Result<bool> {
     let automation: IUIAutomation = CoCreateInstance::<_, IUIAutomation>(
         &CUIAutomation,
         None::<&IUnknown>,
@@ -56,6 +57,7 @@ unsafe fn activate_with_automation(web_ui_url: &str) -> Result<bool> {
         let window_title = current_string(&window.CurrentName()?).unwrap_or_default();
         if is_web_ui_title(&window_title) {
             activate_window(&window)?;
+            refresh_if_matching(&window, &condition, web_ui_url, refresh_matching_tab);
             return Ok(true);
         }
 
@@ -82,6 +84,7 @@ unsafe fn activate_with_automation(web_ui_url: &str) -> Result<bool> {
             }
 
             activate_window(&window)?;
+            refresh_activated_tab(&window, refresh_matching_tab, true);
             return Ok(true);
         }
     }
@@ -102,11 +105,46 @@ unsafe fn activate_with_automation(web_ui_url: &str) -> Result<bool> {
         }
 
         if try_activate_with_tab_cycle(handle) {
+            refresh_if_matching(window, &condition, web_ui_url, refresh_matching_tab);
             return Ok(true);
         }
     }
 
     Ok(false)
+}
+
+unsafe fn refresh_if_matching(
+    window: &IUIAutomationElement,
+    condition: &IUIAutomationCondition,
+    web_ui_url: &str,
+    refresh_requested: bool,
+) {
+    if !refresh_requested {
+        return;
+    }
+    let address_matches = has_matching_address(window, condition, web_ui_url).unwrap_or(false);
+    refresh_activated_tab(window, refresh_requested, address_matches);
+}
+
+unsafe fn refresh_activated_tab(
+    window: &IUIAutomationElement,
+    refresh_requested: bool,
+    address_matches: bool,
+) {
+    if !should_refresh(refresh_requested, address_matches) {
+        return;
+    }
+    let Ok(handle) = window.CurrentNativeWindowHandle() else {
+        return;
+    };
+    thread::sleep(Duration::from_millis(50));
+    if !handle.0.is_null() && GetForegroundWindow().0 == handle.0 {
+        let _ = send_key_chord(&[VK_CONTROL, VK_R_KEY]);
+    }
+}
+
+fn should_refresh(refresh_requested: bool, address_matches: bool) -> bool {
+    refresh_requested && address_matches
 }
 
 fn try_activate_with_tab_cycle(window: windows::Win32::Foundation::HWND) -> bool {
@@ -313,7 +351,7 @@ fn default_port(scheme: &str) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_web_ui_title, same_origin};
+    use super::{is_web_ui_title, same_origin, should_refresh};
 
     #[test]
     fn browser_address_matches_web_ui_origin() {
@@ -332,5 +370,12 @@ mod tests {
     fn browser_window_title_matches_web_ui() {
         assert!(is_web_ui_title("DeepSeek Harness - Cent Browser"));
         assert!(!is_web_ui_title("New Tab - Cent Browser"));
+    }
+
+    #[test]
+    fn refresh_requires_restart_request_and_matching_address() {
+        assert!(should_refresh(true, true));
+        assert!(!should_refresh(true, false));
+        assert!(!should_refresh(false, true));
     }
 }
